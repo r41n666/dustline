@@ -15,3 +15,6 @@ moddev/DustlineMikuMod/obj/
 moddev/decompiled/
 # BepInEx 运行时缓存
 BepInEx/cache/
+
+# 测试产物
+moddev/shots/
