@@ -20,30 +20,44 @@
 ### 关键设计
 
 游戏用的是**自研骨骼动画系统**（`SourceRig` 直接驱动骨骼 `Transform`，不是 Unity Animator）。
-所以 Mod 的做法是「换皮不换动画」：
+所以 Mod 的做法是「换皮不换动画」—— 保留原版骨架跑全部动画，每帧把骨骼姿态重定向到 Miku 骨架：
 
 ```
 游戏骨架 t_leet / ct_idf （继续跑全部原版动画：移动/瞄准/开火/换弹/死亡物理）
-        │  每帧映射骨骼姿态
+        │  每帧重定向（LateUpdate）
         ▼
-Miku 模型骨架（111 关节，标准人形命名）
+Miku 模型骨架（111 关节）
 ```
 
-骨骼映射（游戏骨骼 → 模型关节）：
+**重定向公式（定稿）**：
 
-| 游戏骨骼 | 模型关节 | 模式 |
-|---|---|---|
-| `pelvis` | `hips` | 世界位置+旋转（保证蹲伏/尸体物理一致） |
-| `spine_0` / `spine_2` | `spine` / `chest` | 仅旋转 |
-| `neck_0` / `head_0` | `neck` / `head` | 仅旋转 |
-| `clavicle_L/R` | `shoulder.L/R` | 仅旋转 |
-| `arm_upper_L/R` | `upper_arm.L/R` | 仅旋转 |
-| `hand_L/R` | `hand.L/R` | 世界位置+旋转（**保证武器握在手里**） |
-| `leg_upper_L/R` | `upper_leg.L/R` | 仅旋转 |
-| `leg_lower_L/R` | `lower_leg.L/R` | 仅旋转 |
-| `ankle_L/R`、`ball_L/R` | `foot.L/R`、`toes.L/R` | 世界位置+旋转（**保证贴地与尸体物理**） |
+- **位置钉位骨**（骨盆、双手、双肘）：直接采用游戏骨骼的世界位置；
+  旋转 = `游戏世界旋转 × RestOffset`
+- **旋转骨**（脊柱/颈/头/肩/大臂/腿）：`初音世界旋转 = 游戏世界旋转 × RestOffset`，
+  再换算为局部旋转（父骨先写，按骨骼深度排序）
+- **RestOffset** = `inverse(游戏静置世界旋转) × 初音静置世界旋转`，
+  在**第一帧姿态同步后**标定一次 —— 不能在 bind pose 时刻标定
+  （这套 Source 骨架的 bind pose 是躺姿，会导致整体倾倒）
 
-共 21 根骨骼一一命中。
+**踩过的坑（全部已修，详见 .workbuddy/memory/2026-10-07.md）**：
+
+| 坑 | 症状 |
+|---|---|
+| `JOINTS_0` 走浮点归一化，关节索引全变 0 | 模型完全不动（蒙皮失效） |
+| 骨架节点没做与顶点相同的坐标转换 | 模型炸开 |
+| bindpose 少乘 `meshNodeWorld` | 模型扭曲 |
+| 同名骨重复（肘/腕副本）选错 | 手臂不弯 |
+| 重定向缺静置偏移 | 蜷缩 |
+| bind pose 时刻标定 | 整体倾倒 |
+| 用 `Renderer.bounds` 测身高 | 高度错误（蒙皮前是过期值，要用 `sharedMesh.bounds`） |
+
+**自检日志**：启动时输出 `[selfcheck] verts=... weighted=... bindposeDetMin=... bones=...`。
+判读：`weighted` 必须等于 `verts`；`bindposeDetMin` 应为 +1；`bones` 应等于模型骨骼数。
+任何变形/炸开问题先看这行数字，不要靠截图猜。
+
+**共 21 根骨骼一一映射**：pelvis→hips（位置+旋转）、spine_0→spine、spine_2→chest、
+neck_0→neck、head_0→head、clavicle→shoulder、arm_upper→upper_arm、arm_lower→lower_arm（位置）、
+hand→hand（位置）、leg_upper→upper_leg、leg_lower→lower_leg、ankle→foot、ball→toes。
 
 ---
 
