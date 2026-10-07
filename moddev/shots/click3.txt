@@ -1,0 +1,2 @@
+﻿game=Dustline foreground=Dustline
+clicked window(175,157) -> screen(344,418) winRect=(169,261,1625,1200)

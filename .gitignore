@@ -2,3 +2,16 @@
 *.log
 Logs/
 Temp/
+
+# Mod 开发工具链（体积大，不入库，可由脚本重新获取）
+moddev/dotnet/
+moddev/tools/
+moddev/dl/
+moddev/bepinex_extract/
+moddev/DustlineMikuMod/bin/
+moddev/DustlineMikuMod/obj/
+
+# 游戏程序集反编译产物（第三方代码，仅作开发参考）
+moddev/decompiled/
+# BepInEx 运行时缓存
+BepInEx/cache/
