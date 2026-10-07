@@ -11,6 +11,7 @@ public static class Win32Keys {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 }
 "@
+& "D://Dustline//dustline//moddev//focus_game.ps1" | Out-Null
 $proc = Get-Process Dustline -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $proc) { "no game window" | Out-File "D:\Dustline\dustline\moddev\shots\keys.txt" -Encoding utf8; exit 1 }
 [Win32Keys]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null

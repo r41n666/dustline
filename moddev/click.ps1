@@ -24,6 +24,7 @@ public static class Click33 {
 }
 "@
 $log = @()
+& "D://Dustline//dustline//moddev//focus_game.ps1" | Out-Null
 $proc = Get-Process Dustline -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $proc) { $log += "no window"; $log | Out-File "D:\Dustline\dustline\moddev\shots\click.txt" -Encoding utf8; exit 1 }
 $hwnd = $proc.MainWindowHandle
