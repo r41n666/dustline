@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using Dustline;
+using HarmonyLib;
 
 namespace DustlineMikuMod
 {
@@ -19,6 +20,15 @@ namespace DustlineMikuMod
 
         public static bool Active { get; private set; }
 
+        /// <summary>供控制台调用：强制设置第三人称开关。</summary>
+        public static void SetThirdPerson(bool value)
+        {
+            if (Instance == null && value) _ = Instance;
+            Instance.thirdPersonOn = value;
+            Instance.toastText = value ? "第三人称：开" : "第三人称：关";
+            Instance.toastUntil = Time.unscaledTime + 1.6f;
+        }
+
         public static ThirdPersonController Instance
         {
             get
@@ -33,6 +43,8 @@ namespace DustlineMikuMod
 
         private static KeyCode toggleKey = KeyCode.V;
         private static bool toggleKeyResolved;
+        private string toastText = string.Empty;
+        private float toastUntil;
 
         private void Update()
         {
@@ -40,21 +52,62 @@ namespace DustlineMikuMod
             if (Input.GetKeyDown(toggleKey))
             {
                 thirdPersonOn = !thirdPersonOn;
+                toastText = thirdPersonOn ? "第三人称：开" : "第三人称：关";
+                toastUntil = Time.unscaledTime + 1.6f;
                 MikuModPlugin.Log?.LogInfo("Third person " + (thirdPersonOn ? "ON" : "OFF"));
             }
             Active = Evaluate();
+            if (!Active) RestoreFirstPersonViewmodel();
+        }
+
+        /// <summary>从第三人称切回来时，兜底恢复第一人称手臂+武器视图模型。</summary>
+        private static void RestoreFirstPersonViewmodel()
+        {
+            try
+            {
+                Game game = Game.Instance;
+                if (game == null || game.Camera == null || game.Scoped) return;
+                Dustline.WeaponView view = game.Camera.GetComponent<Dustline.WeaponView>();
+                if (view == null) return;
+                Transform pivot = ViewmodelPivot(view);
+                if (pivot != null && !pivot.gameObject.activeSelf) pivot.gameObject.SetActive(true);
+            }
+            catch (Exception e)
+            {
+                MikuModPlugin.Log?.LogWarning("Restore viewmodel failed: " + e.Message);
+            }
+        }
+
+        private static readonly AccessTools.FieldRef<Dustline.WeaponView, Transform> ViewmodelPivotRef =
+            AccessTools.FieldRefAccess<Dustline.WeaponView, Transform>("pivot");
+
+        private static Transform ViewmodelPivot(Dustline.WeaponView view) => ViewmodelPivotRef(view);
+
+        private void OnGUI()
+        {
+            if (string.IsNullOrEmpty(toastText) || Time.unscaledTime > toastUntil) return;
+            float remain = toastUntil - Time.unscaledTime;
+            Color previous = GUI.color;
+            GUI.color = new Color(1f, 1f, 1f, Mathf.Clamp01(remain));
+            GUIStyle style = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 26,
+                alignment = TextAnchor.MiddleCenter,
+                fontStyle = FontStyle.Bold
+            };
+            GUI.Label(new Rect(0f, Screen.height * 0.18f, Screen.width, 40f), toastText, style);
+            GUI.color = previous;
         }
 
         private static bool Evaluate()
         {
             if (!MikuConfig.ThirdPersonEnabled) return false;
+            if (!Instance.thirdPersonOn) return false;
             Game game = Game.Instance;
-            if (game == null || !game.Playing || game.Paused) return false;
-            if (game.Local == null || !game.Local.Alive) return false;
-            if (game.Viewing != game.Local) return false;      // 观战/死亡时不切换
-            if (game.Scoped) return false;                     // 开镜保持第一人称
-            Camera camera = game.Camera;
-            return camera != null;
+            if (game == null || game.Camera == null) return false;
+            if (!game.Playing || game.Paused) return false;
+            if (game.Scoped) return false;          // 开镜保持第一人称
+            return true;
         }
 
         private static void ResolveToggleKey()
@@ -73,11 +126,21 @@ namespace DustlineMikuMod
 
         private void LateUpdate()
         {
-            if (!Active) return;
-            Game game = Game.Instance;
-            if (game == null || game.Camera == null) return;
+            // 控制台 fov 命令的覆盖值（-1 表示不覆盖）
+            if (MikuConfig.FovOverride > 0f)
+            {
+                Game game = Game.Instance;
+                if (game?.Camera != null && Mathf.Abs(game.Camera.fieldOfView - MikuConfig.FovOverride) > 0.01f)
+                {
+                    game.Camera.fieldOfView = MikuConfig.FovOverride;
+                }
+            }
 
-            Transform cameraTransform = game.Camera.transform;
+            if (!Active) return;
+            Game camGame = Game.Instance;
+            if (camGame == null || camGame.Camera == null) return;
+
+            Transform cameraTransform = camGame.Camera.transform;
             Vector3 eye = cameraTransform.position;
             Quaternion rotation = cameraTransform.rotation;
 

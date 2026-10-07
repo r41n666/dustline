@@ -24,8 +24,7 @@ namespace DustlineMikuMod
             public Transform Game;
             public Transform Miku;
             public MirrorMode Mode;
-            public Quaternion LocalOffset;
-            public Quaternion WorldOffset;
+            public Quaternion RestOffset;   // inverse(游戏静置世界旋转) × 初音静置世界旋转
         }
 
         private sealed class ModelTemplate
@@ -52,26 +51,29 @@ namespace DustlineMikuMod
             ("head_0",      "head",        MirrorMode.RotationOnly),
             ("clavicle_L",  "shoulder.l",  MirrorMode.RotationOnly),
             ("arm_upper_L", "upper_arm.l", MirrorMode.RotationOnly),
-            ("arm_lower_L", "lower_arm.l", MirrorMode.RotationOnly),
+            ("arm_lower_L", "lower_arm.l", MirrorMode.WorldPose),
             ("hand_L",      "hand.l",      MirrorMode.WorldPose),
             ("leg_upper_L", "upper_leg.l", MirrorMode.RotationOnly),
             ("leg_lower_L", "lower_leg.l", MirrorMode.RotationOnly),
-            ("ankle_L",     "foot.l",      MirrorMode.WorldPose),
-            ("ball_L",      "toes.l",      MirrorMode.WorldPose),
+            ("ankle_L",     "foot.l",      MirrorMode.RotationOnly),
+            ("ball_L",      "toes.l",      MirrorMode.RotationOnly),
             ("clavicle_R",  "shoulder.r",  MirrorMode.RotationOnly),
             ("arm_upper_R", "upper_arm.r", MirrorMode.RotationOnly),
-            ("arm_lower_R", "lower_arm.r", MirrorMode.RotationOnly),
+            ("arm_lower_R", "lower_arm.r", MirrorMode.WorldPose),
             ("hand_R",      "hand.r",      MirrorMode.WorldPose),
             ("leg_upper_R", "upper_leg.r", MirrorMode.RotationOnly),
             ("leg_lower_R", "lower_leg.r", MirrorMode.RotationOnly),
-            ("ankle_R",     "foot.r",      MirrorMode.WorldPose),
-            ("ball_R",      "toes.r",      MirrorMode.WorldPose),
+            ("ankle_R",     "foot.r",      MirrorMode.RotationOnly),
+            ("ball_R",      "toes.r",      MirrorMode.RotationOnly),
         };
 
         private SourceRig bodyRig;
         private GameObject modelInstance;
         private Transform modelRoot;
         private Transform pelvisBone;
+        private Transform mikuHead;
+        private bool heightAligned;
+        private bool offsetsCalibrated;
         private BonePair[] pairs = Array.Empty<BonePair>();
         private bool staticModel;
         private bool initialized;
@@ -83,8 +85,7 @@ namespace DustlineMikuMod
         }
 
         /// <summary>按需加载并缓存模型模板（整局只解析/构建一次，之后每个角色实例化副本）。</summary>
-        private static ModelTemplate GetTemplate(string fileName)
-        {
+        private static ModelTemplate GetTemplate(string fileName)        {
             if (Templates.TryGetValue(fileName, out ModelTemplate existing)) return existing;
             ModelTemplate template = new ModelTemplate();
             try
@@ -142,7 +143,7 @@ namespace DustlineMikuMod
             }
 
             byte team = ResolveTeam();
-            string file = team == 1 ? TModelFile : CTModelFile;
+            string file = (team == 1 || MikuConfig.UseCatForBothTeams) ? TModelFile : CTModelFile;
             ModelTemplate template = GetTemplate(file);
             if (template == null || !template.Loaded)
             {
@@ -162,7 +163,11 @@ namespace DustlineMikuMod
 
             if (!staticModel)
             {
-                BuildBonePairs(template.Build);
+                // 注意：必须索引【实例】里的骨骼。模板是所有角色共用的，
+                // 引用模板骨骼会导致每个实例都停在 bind pose（T-pose）。
+                IndexInstanceNodes();
+                BuildBonePairs();
+                instanceNodes.TryGetValue("head", out mikuHead);
             }
 
             HideOriginalBody();
@@ -216,26 +221,108 @@ namespace DustlineMikuMod
             return null;
         }
 
-        private void BuildBonePairs(MikuModelFactory.BuildResult build)
+        private readonly Dictionary<string, Transform> instanceNodes = new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<Transform>> instanceCandidates = new Dictionary<string, List<Transform>>(StringComparer.OrdinalIgnoreCase);
+
+        private void IndexInstanceNodes()
+        {
+            instanceNodes.Clear();
+            instanceCandidates.Clear();
+            foreach (Transform t in modelInstance.GetComponentsInChildren<Transform>(true))
+            {
+                string key = MikuModelFactory.NormalizeBoneKey(t.name);
+                if (key.Length == 0) continue;
+                if (!instanceCandidates.TryGetValue(key, out List<Transform> list))
+                {
+                    list = new List<Transform>();
+                    instanceCandidates[key] = list;
+                }
+                list.Add(t);
+            }
+            // 同一键可能有多根骨（模型里 lower_arm 同时有肘部与腕部副本）。
+            // 选骨规则：优先「祖先链包含已解析的上游骨」的那一根，保证骨链连续、肘部能弯。
+            foreach ((string gameBone, string mikuKey, MirrorMode mode) in BoneMap)
+            {
+                if (!instanceCandidates.TryGetValue(mikuKey, out List<Transform> candidates) || candidates.Count == 0) continue;
+                instanceNodes[mikuKey] = PickBone(candidates, mikuKey);
+            }
+        }
+
+        /// <summary>BoneMap 里紧邻的上游键（用于骨链连续性判定）。</summary>
+        private static string ParentKeyOf(string mikuKey)
+        {
+            switch (mikuKey)
+            {
+                case "spine": return "hips";
+                case "chest": return "spine";
+                case "neck": return "chest";
+                case "head": return "neck";
+                case "shoulder.l": return "chest";
+                case "upper_arm.l": return "shoulder.l";
+                case "lower_arm.l": return "upper_arm.l";
+                case "hand.l": return "lower_arm.l";
+                case "upper_leg.l": return "hips";
+                case "lower_leg.l": return "upper_leg.l";
+                case "foot.l": return "lower_leg.l";
+                case "toes.l": return "foot.l";
+                case "shoulder.r": return "chest";
+                case "upper_arm.r": return "shoulder.r";
+                case "lower_arm.r": return "upper_arm.r";
+                case "hand.r": return "lower_arm.r";
+                case "upper_leg.r": return "hips";
+                case "lower_leg.r": return "upper_leg.r";
+                case "foot.r": return "lower_leg.r";
+                case "toes.r": return "foot.r";
+                default: return null;
+            }
+        }
+
+        private Transform PickBone(List<Transform> candidates, string mikuKey)
+        {
+            if (candidates.Count == 1) return candidates[0];
+            string parentKey = ParentKeyOf(mikuKey);
+            if (parentKey != null && instanceNodes.TryGetValue(parentKey, out Transform parentBone))
+            {
+                foreach (Transform candidate in candidates)
+                {
+                    Transform walker = candidate.parent;
+                    for (int i = 0; i < 24 && walker != null; i++)
+                    {
+                        if (walker == parentBone) return candidate;
+                        walker = walker.parent;
+                    }
+                }
+            }
+            return candidates[0];
+        }
+
+        private void BuildBonePairs()
         {
             List<BonePair> list = new List<BonePair>(BoneMap.Length);
             foreach ((string gameBone, string mikuKey, MirrorMode mode) in BoneMap)
             {
                 Transform game = FindBone(gameBone);
-                Transform miku = null;
-                if (build.NodesByKey != null && build.NodesByKey.TryGetValue(mikuKey, out Transform found)) miku = found;
+                instanceNodes.TryGetValue(mikuKey, out Transform miku);
                 if (game == null || miku == null) continue;
-                BonePair pair = new BonePair
-                {
-                    Game = game,
-                    Miku = miku,
-                    Mode = mode,
-                    LocalOffset = Quaternion.Inverse(game.localRotation) * miku.localRotation,
-                    WorldOffset = Quaternion.Inverse(game.rotation) * miku.rotation
-                };
-                list.Add(pair);
+                // RestOffset 延迟到第一帧姿态同步时标定：
+                // 这套骨架的 bind pose 是「躺姿」，在 bind 时刻标定会把站姿映射成躺姿。
+                list.Add(new BonePair { Game = game, Miku = miku, Mode = mode });
             }
+            // 父骨必须先写：子骨的局部旋转由父骨世界朝向推导
+            list.Sort((a, b) => GameDepth(a.Game).CompareTo(GameDepth(b.Game)));
             pairs = list.ToArray();
+        }
+
+        private static int GameDepth(Transform bone)
+        {
+            int depth = 0;
+            Transform current = bone;
+            while (current != null && depth < 32)
+            {
+                depth++;
+                current = current.parent;
+            }
+            return depth;
         }
 
         private void HideOriginalBody()
@@ -266,19 +353,100 @@ namespace DustlineMikuMod
                 FollowStatic();
                 return;
             }
+            if (!offsetsCalibrated)
+            {
+                offsetsCalibrated = true;
+                for (int i = 0; i < pairs.Length; i++)
+                {
+                    if (pairs[i].Game == null || pairs[i].Miku == null) continue;
+                    pairs[i].RestOffset = Quaternion.Inverse(pairs[i].Game.rotation) * pairs[i].Miku.rotation;
+                }
+            }
             for (int i = 0; i < pairs.Length; i++)
             {
                 BonePair pair = pairs[i];
                 if (pair.Game == null || pair.Miku == null) continue;
                 if (pair.Mode == MirrorMode.WorldPose)
                 {
-                    pair.Miku.SetPositionAndRotation(pair.Game.position, pair.Game.rotation * pair.WorldOffset);
+                    // 位置钉住游戏骨骼；旋转同样要加静置偏移，
+                    // 否则根骨（骨盆）会比其他骨头少转一个静置差，整个人向一侧倒。
+                    pair.Miku.SetPositionAndRotation(pair.Game.position, pair.Game.rotation * pair.RestOffset);
                 }
                 else
                 {
-                    pair.Miku.localRotation = pair.Game.localRotation * pair.LocalOffset;
+                    // 直接采用游戏骨骼的世界朝向，再换算成局部旋转。
+                    // 这样不依赖两套骨架的坐标系/绑定姿势约定，避免出现 T-pose。
+                    Transform parent = pair.Miku.parent;
+                    Quaternion parentWorld = parent != null ? parent.rotation : modelInstance.transform.rotation;
+                    Quaternion desiredWorld = pair.Game.rotation * pair.RestOffset;
+                    pair.Miku.localRotation = Quaternion.Inverse(parentWorld) * desiredWorld;
                 }
             }
+            if (!heightAligned && MikuConfig.AutoAlignHeight)
+            {
+                AlignHeightToCharacter();
+                heightAligned = true;
+            }
+        }
+
+
+        /// <summary>
+        /// 第三人称时兜底：确保本地角色 actor 处于激活状态。
+        /// 姿态驱动只保留 SceneView.UpdatePlayers 补丁里的那一次——
+        /// 重复驱动会让原版骨架停在 bind pose（表现为 T-pose）。
+        /// </summary>
+        private void EnsureLocalActorVisible()
+        {
+            if (!ThirdPersonController.Active) return;
+            Game game = Game.Instance;
+            if (game?.Local == null) return;
+            if (!gameObject.activeSelf) gameObject.SetActive(true);
+        }
+
+        private CharacterModel characterModel;
+        private SceneView sceneView;
+
+        /// <summary>
+        /// 用「模型 bind pose 包围盒高度」对齐原角色身高。
+        /// 不能用头关节对齐：初音是 Q 版（头大身短），按头高对齐会把四肢拉长近一倍，
+        /// 手部被钉在原角色手位时手臂会被迫伸直，看起来就是 T-pose。
+        /// </summary>
+        private void AlignHeightToCharacter()
+        {
+            Transform headBone = FindBone("head_0");
+            Transform footBone = FindBone("ball_L");
+            if (headBone == null || footBone == null || modelInstance == null) return;
+
+            float characterHeight = headBone.position.y - footBone.position.y;
+            Bounds combined = GetModelBounds();
+            if (characterHeight < 0.5f || combined.size.y < 0.05f) return;
+
+            float factor = characterHeight / combined.size.y;
+            Transform container = modelInstance.transform;
+            container.localScale = container.localScale * factor;
+            MikuModPlugin.Log?.LogInfo($"Height aligned: character={characterHeight:F3}m model={combined.size.y:F3}m " +
+                $"scale x{factor:F3} -> {container.localScale.y:F3}");
+        }
+
+        /// <summary>
+        /// 取模型 bind pose 的网格包围盒（模型空间，未含容器缩放）。
+        /// 不能用 Renderer.bounds：蒙皮更新前它是过期的（会明显偏小）。
+        /// </summary>
+        private Bounds GetModelBounds()
+        {
+            Bounds bounds = new Bounds();
+            bool first = true;
+            foreach (Renderer renderer in modelInstance.GetComponentsInChildren<Renderer>(true))
+            {
+                Mesh mesh = null;
+                MeshFilter filter = renderer.GetComponent<MeshFilter>();
+                if (filter != null) mesh = filter.sharedMesh;
+                else if (renderer is SkinnedMeshRenderer skinned) mesh = skinned.sharedMesh;
+                if (mesh == null || mesh.vertexCount == 0) continue;
+                if (first) { bounds = mesh.bounds; first = false; }
+                else bounds.Encapsulate(mesh.bounds);
+            }
+            return bounds;
         }
 
         private void FollowStatic()

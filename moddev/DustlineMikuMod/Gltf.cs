@@ -377,7 +377,7 @@ namespace DustlineMikuMod
                 int offset = i * stride;
                 if (offset >= span.Length) continue;
                 int avail = Math.Min(stride, span.Length - offset);
-                for (int k = 0; k < 4; k++) result[i][k] = (int)ReadFloat(span.Slice(offset, avail), k, componentType, components);
+                for (int k = 0; k < 4; k++) result[i][k] = ReadIndex(span.Slice(offset, avail), k, componentType);
             }
             return result;
         }
@@ -427,6 +427,27 @@ namespace DustlineMikuMod
                 result[i] = m;
             }
             return result;
+        }
+
+        /// <summary>
+        /// 读取整数分量（JOINTS_0 用 unsigned byte / unsigned short，不能走浮点归一化路径，
+        /// 否则 3/255 会被截断成 0，导致所有顶点绑定到 0 号骨、蒙皮完全失效）。
+        /// </summary>
+        private static int ReadIndex(ReadOnlySpan<byte> data, int index, int componentType)
+        {
+            int size = componentByteSize(componentType);
+            int offset = index * size;
+            if (offset + size > data.Length) return 0;
+            switch (componentType)
+            {
+                case ComponentUnsignedByte: return data[offset];
+                case ComponentByte: return (sbyte)data[offset];
+                case ComponentUnsignedShort: return BitConverter.ToUInt16(data.Slice(offset, 2).ToArray(), 0);
+                case ComponentShort: return BitConverter.ToInt16(data.Slice(offset, 2).ToArray(), 0);
+                case ComponentUnsignedInt: return (int)BitConverter.ToUInt32(data.Slice(offset, 4).ToArray(), 0);
+                case ComponentFloat: return (int)BitConverter.ToSingle(data.Slice(offset, 4).ToArray(), 0);
+                default: return 0;
+            }
         }
 
         private static float ReadFloat(ReadOnlySpan<byte> data, int index, int componentType, int components)

@@ -48,8 +48,20 @@ namespace DustlineMikuMod
         [HarmonyPatch(typeof(SceneView), "UpdatePlayers")]
         private static class UpdatePlayersPatch
         {
+            private static int debugCount;
+            private static int abLog;
+
             private static void Postfix(SceneView __instance, int local)
             {
+                if (debugCount < 4)
+                {
+                    debugCount++;
+                    Transform dbgActor = __instance.Actor(local);
+                    MikuModPlugin.Log?.LogInfo($"[dbg]UpdatePlayers active={ThirdPersonController.Active} local={local} " +
+                        $"actor={(dbgActor != null ? dbgActor.name : "null")} " +
+                        $"actorActive={(dbgActor != null && dbgActor.gameObject.activeSelf)} " +
+                        $"viewPose={(Game.Instance != null && Game.Instance.ViewPose != null)}");
+                }
                 if (!ThirdPersonController.Active) return;
                 Game game = Game.Instance;
                 if (game == null) return;
@@ -63,6 +75,45 @@ namespace DustlineMikuMod
                     if (!actor.gameObject.activeSelf) actor.gameObject.SetActive(true);
                     CharacterModel model = actor.GetComponent<CharacterModel>();
                     if (model != null) model.Pose(pose, Time.unscaledDeltaTime);
+                    if (abLog < 3)
+                    {
+                        abLog++;
+                        System.Func<string, string> fmt = tag =>
+                        {
+                            SourceRig r = null;
+                            foreach (SourceRig cand in actor.GetComponentsInChildren<SourceRig>(true))
+                            {
+                                if (cand.Model == "t_leet") { r = cand; break; }
+                            }
+                            if (r == null) return tag + ":no-rig";
+                            Transform c = r.Named.TryGetValue("clavicle_L", out Transform t1) ? t1 : null;
+                            Transform u = r.Named.TryGetValue("arm_upper_L", out Transform t2) ? t2 : null;
+                            Transform l = r.Named.TryGetValue("arm_lower_L", out Transform t3) ? t3 : null;
+                            Transform h = r.Named.TryGetValue("hand_L", out Transform t4) ? t4 : null;
+                            string P(Transform t) => t == null ? "null" : $"({t.position.x:F2},{t.position.y:F2},{t.position.z:F2})";
+                            return $"{tag} clav={P(c)} upper={P(u)} lower={P(l)} hand={P(h)} vis={r.IsVisible}";
+                        };
+                        MikuModPlugin.Log?.LogInfo("[ab]LOCAL  " + fmt("local"));
+                        // 同一帧里找一个远端 T 方角色做对照
+                        for (int i = 0; i < 10; i++)
+                        {
+                            if (i == local) continue;
+                            Transform other = __instance.Actor(i);
+                            if (other == null || other == actor) continue;
+                            CharacterModel om = other.GetComponent<CharacterModel>();
+                            SourceRig orc = null;
+                            foreach (SourceRig cand in other.GetComponentsInChildren<SourceRig>(true))
+                            {
+                                if (cand.Model == "t_leet") { orc = cand; break; }
+                            }
+                            if (orc == null) continue;
+                            Transform c = orc.Named.TryGetValue("clavicle_L", out Transform t1) ? t1 : null;
+                            Transform h = orc.Named.TryGetValue("hand_L", out Transform t4) ? t4 : null;
+                            string P(Transform t) => t == null ? "null" : $"({t.position.x:F2},{t.position.y:F2},{t.position.z:F2})";
+                            MikuModPlugin.Log?.LogInfo($"[ab]REMOTE{i} clav={P(c)} hand={P(h)} vis={orc.IsVisible} active={other.gameObject.activeSelf}");
+                            break;
+                        }
+                    }
                 }
                 catch (Exception e)
                 {
@@ -122,6 +173,50 @@ namespace DustlineMikuMod
                 __result = clip;
                 return false;
             }
+        }
+    }
+
+    /// <summary>
+    /// 控制台打开时屏蔽游戏按键输入（游戏用的是内部 UnityControlSource，按类型名 patch）。
+    /// </summary>
+    internal static class InputSuppression
+    {
+        public static void Apply(Harmony harmony)
+        {
+            System.Type type = AccessTools.TypeByName("Dustline.UnityControlSource");
+            if (type == null)
+            {
+                MikuModPlugin.Log?.LogWarning("UnityControlSource not found; console input suppression disabled.");
+                return;
+            }
+            harmony.Patch(AccessTools.Method(type, "Held"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(InputSuppression), nameof(HeldPrefix))));
+            harmony.Patch(AccessTools.Method(type, "Pressed"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(InputSuppression), nameof(PressedPrefix))));
+            harmony.Patch(AccessTools.Method(type, "get_Wheel"),
+                prefix: new HarmonyMethod(AccessTools.Method(typeof(InputSuppression), nameof(WheelPrefix))));
+            MikuModPlugin.Log?.LogInfo("Console input suppression installed.");
+        }
+
+        private static bool HeldPrefix(ref bool __result)
+        {
+            if (!ConsoleWindow.SuppressGameInput) return true;
+            __result = false;
+            return false;
+        }
+
+        private static bool PressedPrefix(ref bool __result)
+        {
+            if (!ConsoleWindow.SuppressGameInput) return true;
+            __result = false;
+            return false;
+        }
+
+        private static bool WheelPrefix(ref float __result)
+        {
+            if (!ConsoleWindow.SuppressGameInput) return true;
+            __result = 0f;
+            return false;
         }
     }
 }

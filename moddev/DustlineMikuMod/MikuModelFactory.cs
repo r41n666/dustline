@@ -23,6 +23,10 @@ namespace DustlineMikuMod
             public bool HasSkin;
             public int TriangleCount;
             public float AutoFitScale = 1f;
+            public int SkinnedVertices;
+            public int TotalVertices;
+            public float MinBindposeDet = float.MaxValue;
+            public int BoneCount;
         }
 
         public static BuildResult Build(Gltf gltf, string modelName, float uniformScale, float yawOffsetDegrees)
@@ -54,9 +58,9 @@ namespace DustlineMikuMod
             {
                 Gltf.NodeDef def = gltf.Nodes[i];
                 GameObject go = new GameObject(SanitizeName(def.Name, i));
-                go.transform.localPosition = def.Translation;
-                go.transform.localRotation = def.Rotation;
-                go.transform.localScale = def.Scale;
+                go.transform.localPosition = ConvertPosition(def.Translation);
+                go.transform.localRotation = ConvertRotation(def.Rotation);
+                go.transform.localScale = ConvertScale(def.Scale);
                 result.NodeTransforms[i] = go.transform;
                 if (!result.NodesByName.ContainsKey(def.Name)) result.NodesByName[def.Name] = go.transform;
                 string key = NormalizeBoneKey(def.Name);
@@ -104,17 +108,26 @@ namespace DustlineMikuMod
                         SkinnedMeshRenderer renderer = part.AddComponent<SkinnedMeshRenderer>();
                         Transform[] bones = new Transform[skin.Joints.Length];
                         Matrix4x4[] bindPoses = new Matrix4x4[skin.Joints.Length];
+                        // bindpose 必须把「网格所在节点空间」映射到「骨骼空间」：
+                        //   bindpose = inverse(boneWorldBind) * meshNodeWorldBind
+                        // 少了meshNodeWorld 这一项，网格节点带位移时就会整体扭曲。
+                        Matrix4x4 meshNodeWorld = worldMatrices[nodeIndex];
+                        Matrix4x4 meshToWorld = meshNodeWorld;
                         for (int b = 0; b < skin.Joints.Length; b++)
                         {
                             int jointNode = skin.Joints[b];
                             bool valid = jointNode >= 0 && jointNode < count;
                             bones[b] = valid ? result.NodeTransforms[jointNode] : nodeTransform;
-                            bindPoses[b] = valid ? worldMatrices[jointNode].inverse : Matrix4x4.identity;
+                            bindPoses[b] = valid ? worldMatrices[jointNode].inverse * meshToWorld : meshToWorld.inverse;
+                            result.MinBindposeDet = Mathf.Min(result.MinBindposeDet, bindPoses[b].determinant);
                         }
                         ApplyBoneWeights(gltf, built, prim);
+                        result.SkinnedVertices += CountWeightedVertices(built);
+                        result.TotalVertices += prim.VertexCount;
                         built.bindposes = bindPoses;
                         renderer.sharedMesh = built;
                         renderer.bones = bones;
+                        result.BoneCount = Math.Max(result.BoneCount, bones.Length);
                         renderer.rootBone = skin.SkeletonRoot >= 0 && skin.SkeletonRoot < result.NodeTransforms.Length
                             ? result.NodeTransforms[skin.SkeletonRoot]
                             : (bones.Length > 0 ? bones[0] : nodeTransform);
@@ -160,7 +173,43 @@ namespace DustlineMikuMod
                 MikuModPlugin.Log?.LogInfo($"Static model auto-fit: bounds={combined.size} scale={fitScale:F4} total={result.AutoFitScale:F4}");
             }
 
+            // ---- 自检日志：渲染异常时先看这行数字，不用靠截图猜 ----
+            if (float.IsInfinity(result.MinBindposeDet)) result.MinBindposeDet = 1f;
+            MikuModPlugin.Log?.LogInfo(
+                $"[selfcheck] verts={result.TotalVertices} weighted={result.SkinnedVertices} " +
+                $"bindposeDetMin={result.MinBindposeDet:F4} bones={result.BoneCount}");
+
             return result;
+        }
+
+        // ---- 坐标系转换：glTF(右手, +Z 正面, Y 上 -> 模型是 Z-up) → Unity(左手, +Z 正面, Y 上) ----
+        // 顶点、节点位移、节点旋转、节点矩阵必须用同一套转换，否则 bindpose 对不上、模型会炸开。
+
+        // 该模型是 Y-up；只需把正面从 -Z 转到 +Z（由容器绕 Y 旋转 180° 完成），
+        // 顶点与骨架统一做 Z 轴镜像（行列式 -1），因此 bindpose 必须在同一镜像空间内计算。
+        private static Vector3 ConvertPosition(Vector3 v) => new Vector3(v.x, v.y, -v.z);
+
+        /// <summary>镜像共轭：R' = F · R · F，F = diag(1,1,-1) ⇒ (x,y,z,w) → (-x,-y,z,w)。</summary>
+        private static Quaternion ConvertRotation(Quaternion q) => new Quaternion(-q.x, -q.y, q.z, q.w);
+
+        /// <summary>M' = F · M · F。</summary>
+        private static Matrix4x4 ConvertMatrix(Matrix4x4 m)
+        {
+            Matrix4x4 f = Matrix4x4.Scale(new Vector3(1f, 1f, -1f));
+            return f * m * f;
+        }
+
+        private static Vector3 ConvertScale(Vector3 s) => new Vector3(s.x, s.y, s.z);
+
+        private static int CountWeightedVertices(Mesh mesh)
+        {
+            int count = 0;
+            BoneWeight[] weights = mesh.boneWeights;
+            for (int i = 0; i < weights.Length; i++)
+            {
+                if (weights[i].weight0 + weights[i].weight1 + weights[i].weight2 + weights[i].weight3 > 0.001f) count++;
+            }
+            return count;
         }
 
         private static void ApplyBoneWeights(Gltf gltf, Mesh mesh, Gltf.PrimitiveDef prim)
@@ -221,7 +270,9 @@ namespace DustlineMikuMod
             for (int i = 0; i < count; i++)
             {
                 Gltf.NodeDef def = gltf.Nodes[i];
-                local[i] = def.HasMatrix ? def.Matrix : Matrix4x4.TRS(def.Translation, def.Rotation, def.Scale);
+                local[i] = def.HasMatrix
+                    ? ConvertMatrix(def.Matrix)
+                    : Matrix4x4.TRS(ConvertPosition(def.Translation), ConvertRotation(def.Rotation), ConvertScale(def.Scale));
             }
             bool[] done = new bool[count];
             int remaining = count;
@@ -257,7 +308,7 @@ namespace DustlineMikuMod
             for (int i = 0; i < vertexCount; i++)
             {
                 Vector3 p = positions[i];
-                vertices[i] = new Vector3(p.x, p.y, -p.z);
+                vertices[i] = ConvertPosition(p);
             }
             Vector3[] convertedNormals = null;
             if (normals != null && normals.Length == vertexCount)
@@ -266,7 +317,7 @@ namespace DustlineMikuMod
                 for (int i = 0; i < vertexCount; i++)
                 {
                     Vector3 n = normals[i];
-                    convertedNormals[i] = new Vector3(n.x, n.y, -n.z);
+                    convertedNormals[i] = ConvertPosition(n);
                 }
             }
             Vector2[] convertedUvs = null;
@@ -281,7 +332,7 @@ namespace DustlineMikuMod
             for (int i = 0; i < indexCount; i++)
             {
                 int v = sourceIndices != null ? sourceIndices[i] : i;
-                triangles[indexCount - 1 - i] = v;   // 绕序反转
+                triangles[indexCount - 1 - i] = v;   // 镜像翻转绕序，需反转
             }
 
             Mesh mesh = new Mesh

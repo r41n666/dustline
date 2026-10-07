@@ -46,6 +46,10 @@
       <HintPath>$(GameRoot)\Dustline_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(GameRoot)\Dustline_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>$(GameRoot)\Dustline_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>

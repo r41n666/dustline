@@ -48,6 +48,7 @@ namespace DustlineMikuMod
             {
                 harmony = new Harmony(PluginGuid);
                 harmony.PatchAll(Assembly.GetExecutingAssembly());
+                InputSuppression.Apply(harmony);
                 Log.LogInfo("Harmony patches applied.");
             }
             catch (Exception e)
@@ -57,6 +58,7 @@ namespace DustlineMikuMod
 
             try
             {
+                ConsoleWindow.Ensure();
                 ThirdPersonController.Instance.StartCoroutine(DelayedInitialize());
             }
             catch (Exception e)

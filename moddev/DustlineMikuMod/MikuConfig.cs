@@ -7,11 +7,16 @@ namespace DustlineMikuMod
     {
         // 模型替换
         public static bool ModelReplacementEnabled = true;
+        public static bool UseCatForBothTeams = true;
+        public static bool AutoAlignHeight = true;
         public static float ModelScale = 1.30f;
         public static float ModelYawOffset = 180f;
         public static float StaticModelHeight = 1.72f;
     public static float StaticModelHeightFactor = 1.0f;
         public static float PelvisRestHeight = 0.95f;
+
+        // 视场角覆盖（-1 表示交给游戏设置）
+        public static float FovOverride = -1f;
 
         // 第三人称
         public static bool ThirdPersonEnabled = true;
@@ -30,8 +35,12 @@ namespace DustlineMikuMod
         {
             ModelReplacementEnabled = config.Bind("Model", "Enabled", true,
                 "是否用Miku 模型替换 T/CT 身体模型").Value;
+            UseCatForBothTeams = config.Bind("Model", "UseCatForBothTeams", true,
+                "两个阵营都使用带骨骼的 cat 模型（关闭时 T 用 cat、CT 用静态 miku.glb）").Value;
+            AutoAlignHeight = config.Bind("Model", "AutoAlignHeight", true,
+                "按原角色骨架自动对齐模型身高（推荐开启，Scale 仅作粗调）").Value;
             ModelScale = config.Bind("Model", "Scale", 1.30f,
-                "模型整体缩放（1.30 约等于原角色身高比例）").Value;
+                "模型整体缩放（关闭自动对齐时生效；开启后作为基准值再按原角色身高修正）").Value;
             ModelYawOffset = config.Bind("Model", "YawOffset", 180f,
                 "模型朝向补偿（度）").Value;
             StaticModelHeight = config.Bind("Model", "StaticHeight", 1.72f,
@@ -41,6 +50,8 @@ namespace DustlineMikuMod
             PelvisRestHeight = config.Bind("Model", "PelvisRestHeight", 0.95f,
                 "骨盆静置高度（米），用于缺少骨骼时的兜底").Value;
 
+            FovOverride = config.Bind("Video", "FovOverride", -1f,
+                "第一人称视场角覆盖（-1 = 使用游戏设置，80~110）").Value;
             ThirdPersonEnabled = config.Bind("ThirdPerson", "Enabled", true,
                 "启用 V 键第一/第三人称切换").Value;
             ThirdPersonKey = config.Bind("ThirdPerson", "ToggleKey", "V",
